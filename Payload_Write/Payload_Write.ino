@@ -2,30 +2,26 @@
 #include <SD.h>
 #include <Wire.h>
 #include <SparkFun_KX13X.h>
-#include <vector>
+#include <cmath>
+#define LAUNCH_BUFFER_SIZE 1600
+#define BUFFER_SIZE 1000
+#define BUFFER_THRESHOLD 854 
 
-
-struct AccelInfo {
-  SparkFun_KX134* accel;
-  const uint8_t num;
-};
-
-struct Reading {
-  int16_t x,y,z;
-};
 
 const double convRange64G = .001953;
 SparkFun_KX134 a1, a2, a3, a4;
-AccelInfo accels[] = {{&a1,1},{&a2,2}};//,{&a3,3},{&a4,4}};
+SparkFun_KX134* accels[] = {&a1,&a2};//,&a3,&a4};
 rawOutputData rawData;
-File writeTo, a1Data, a2Data, a3Data, a4Data;
-std::vector<Reading> buffer;
-int count; 
-int startTime;
+rawOutputData buf[4][BUFFER_SIZE], lbuf[4][LAUNCH_BUFFER_SIZE];
+File writeTo;
+int startTime, count, lconfirm;
+uint16_t bufLoc[4] = {0}, lbufLoc[4] = {0};
 bool launch;
+
 
 void setup() {
   Wire.begin();
+  Wire.setClock(1000000);
   Serial.begin(115200);
   while(!Serial){
     delay(50);
@@ -53,28 +49,29 @@ void setup() {
   // }
   Serial.println("all accelerometers initilized!");
 
-  for(auto a:accels){
-    a.accel->softwareReset();
+  for(int i=0;i<2/*4*/;i++){
+    SparkFun_KX134 &a = *accels[i];
+    a.softwareReset();
     delay(5);
-    a.accel->enableAccel(false);
-    a.accel->setRange(SFE_KX134_RANGE64G);
-    a.accel->enableBufferInt();            //  Enables the Buffer interrupt
-    a.accel->enablePhysInterrupt();        //  Enables interrupt pin 1
-    a.accel->routeHardwareInterrupt(0x40); //  Routes the data ready bit to pin 1
-    a.accel->enableSampleBuffer();         // Enable buffer.
-    a.accel->setBufferOperationMode(0x00); // Enable the buffer to be FIFO.
-    a.accel->setBufferResolution();
-    a.accel->setOutputDataRate(9); //200hz 400 for testing
-    a.accel->enableTapEngine(true);
-    a.accel->enableAccel();
+    a.enableAccel(false);
+    a.setRange(SFE_KX134_RANGE64G);
+    a.enableBufferInt();            //  Enables the Buffer interrupt
+    a.enablePhysInterrupt();        //  Enables interrupt pin 1
+    a.routeHardwareInterrupt(0x40); //  Routes the data ready bit to pin 1
+    a.enableSampleBuffer();         // Enable buffer.
+    a.setBufferOperationMode(0x00); // Enable the buffer to be FIFO.
+    a.setBufferResolution();
+    a.setOutputDataRate(11); //1600 Hz
+    a.enableTapEngine(true);
+    a.enableAccel();
   }
   Serial.println("All accelerometers ready!");
   
+
   //need to add thermometer code (2 Hz)
 
 
   pinMode(26,OUTPUT);
-
   Serial.print("Connecting to SD card...");
   if(!SD.begin(26)){
     Serial.println("cannot connect to SD card!");
@@ -82,143 +79,97 @@ void setup() {
   }
   Serial.println("connected to SD card!");
 
-  if(SD.exists("/accel1_data.csv")){
-    SD.remove("/accel1_data.csv");  
-    Serial.println("erasing accel1_data.csv!");
-  }  
-  if(SD.exists("/accel2_data.csv")){
-    SD.remove("/accel2_data.csv");  
-    Serial.println("erasing accel2_data.csv!");
-  }  
-  if(SD.exists("/accel3_data.csv")){
-    SD.remove("/accel3_data.csv");  
-    Serial.println("erasing accel3_data.csv!");
-  }  
-  if(SD.exists("/accel4_data.csv")){
-    SD.remove("/accel4_data.csv");
-    Serial.println("erasing accel4_data.csv!");
-  }
-  if(SD.exists("/raw_accel_data.txt")){
+  if(SD.exists("/raw_accel_data.txt")){ //REMOVEEEEEE
     SD.remove("/raw_accel_data.txt");
     Serial.println("erasing raw_accel_data.txt!");
   }
 
-  writeTo = SD.open("/raw_accel_data.txt",FILE_WRITE);
-  if(!writeTo){
-    Serial.println("Could not open raw_accel_data.txt!");
-    while(1);
-  }
-  Serial.println("Opened raw_accel_data.txt!");
+  // File root = SD.open("/");
+  // File entry;
+  // while(entry = root.openNextFile()){
+  //   entry.name() //asdijpfgasrthpawrhtawerawer
+  // }
 
+  // writeTo = SD.open("/raw_accel_data.txt",FILE_WRITE); //CHANGE
+  // if(!writeTo){
+  //   Serial.println("Could not open raw_accel_data.txt!");
+  //   while(1);
+  // }
+  // Serial.println("Opened raw_accel_data.txt!");
 
-  count = 0;
+  lconfirm = 0;
   launch = false;
-  startTime = millis(); //will be moved to launch detection
+  count = 0;
+  startTime = millis(); //FOR TESTING
 }
 
 
 void loop() { //add thermometer stuff
-  if(millis()-startTime >= 10000/*600000*/){
-    Serial.printf("%i operations ran in %i ms!!!\n",count, millis());
-    writeTo.flush();
-    writeTo.close();
+  launch = true; //FOR TESTING
 
-    int8_t accelNum;
-    uint16_t numToRead;
-    writeTo = SD.open("/raw_accel_data.txt");
-    size_t pos = writeTo.position();
-
-    while(count){
-      writeTo.seek(pos);
-      writeTo.read((uint8_t*)&accelNum,sizeof(accelNum));
-      writeTo.read((uint8_t*)&numToRead,sizeof(numToRead));
-      std::vector<Reading> readings(numToRead);
-      count-=(int)numToRead;
-
-      for(int i=0;i<(int)numToRead;i++){
-        writeTo.read((uint8_t*)&readings[i].x, 2);
-        writeTo.read((uint8_t*)&readings[i].y, 2);
-        writeTo.read((uint8_t*)&readings[i].z, 2);
+  if(!launch){
+    for(uint8_t i=0;i<2/*4*/;i++){
+      SparkFun_KX134 &a = *accels[i];
+      uint16_t n = a.getSampleLevel();
+      if(n >= 498){
+        n/=6;
+        for(int j=0;j<n;j++){
+          a.getRawAccelBufferData(&lbuf[i][lbufLoc[i]],1);
+          if(magnitude(lbuf[i][lbufLoc[i]]) >= 10){
+            lconfirm++;
+          }
+          else{
+            lconfirm = 0;
+          }
+          lbufLoc[i]++;
+        }
+        if(lbufLoc[i] >= LAUNCH_BUFFER_SIZE){
+          lbufLoc[i] = 0;
+        }
       }
-      pos = writeTo.position();
-      writeTo.close();
-
-      if(accelNum == 1){
-        Serial.println("a1 has data!");
-        writeTo = SD.open("/accel1_data.csv",FILE_WRITE);
-      }
-      else if(accelNum == 2){
-        Serial.println("a2 has data!");
-        writeTo = SD.open("/accel2_data.csv",FILE_WRITE);
-      }
-      else if(accelNum == 3){
-        Serial.println("a3 has data!");
-        writeTo = SD.open("/accel3_data.csv",FILE_WRITE);
-      }
-      else{
-        Serial.println("a4 has data!");
-        writeTo = SD.open("/accel4_data.csv",FILE_WRITE);
-      }
-      for(int i=0;i<(int)numToRead;i++){
-        writeTo.print(readings[i].x*convRange64G);
-        writeTo.print(",");
-        writeTo.print(readings[i].y*convRange64G);
-        writeTo.print(",");
-        writeTo.print(readings[i].z*convRange64G);
-        writeTo.print(",");
-        writeTo.println();
-      }
-      writeTo.flush();
-      writeTo.close();
-
-      writeTo = SD.open("/raw_accel_data.txt");
-      Serial.printf("%i left!\n",count); 
     }
-    Serial.println("Done transferring data!");
+    if(lconfirm >= 40){
+      launch = true;
+      startTime = millis();
+      for(uint8_t i=0;i<4;i++){
+        uint16_t sz = LAUNCH_BUFFER_SIZE;
+        writeTo.write((uint8_t*)&i,sizeof(i));
+        writeTo.write((uint8_t*)&sz,sizeof(sz));
+        writeTo.write((uint8_t*)&lbuf[i][lbufLoc[i]],(LAUNCH_BUFFER_SIZE - lbufLoc[i]) * sizeof(buf[i][0]));
+        writeTo.write((uint8_t*)&lbuf[i][0],lbufLoc[i] * sizeof(buf[i][0]));
+      }
+    }
+    return;
+  }
+
+  if(millis()-startTime >= 6000/*00*/){
+    Serial.printf("Rocket has (hopefully) landed! %i operations ran in %i ms!", count, millis()-startTime);
     while(1);
   }
-
-  for(auto a:accels){
-    uint16_t n = a.accel->getSampleLevel();
-    if(n >= 502){
+  for(uint8_t i=0;i<2/*4*/;i++){
+    SparkFun_KX134 &a = *accels[i];
+    if(a.bufferFull()){
+      Serial.printf("l bozo %i is full\n",i+1);
+    }
+    uint16_t n = a.getSampleLevel();
+    if(n >= 498){
       n/=6;
-      buffer.resize(n);
-
-      launch = true; //FOR TESTING
-      
-      if(launch){
-        writeTo.write((uint8_t*)&a.num,sizeof(a.num));
-        writeTo.write((uint8_t*)&n,sizeof(n));
+      for(int j=0;j<n;j++){
+        a.getRawAccelBufferData(&buf[i][bufLoc[i]],1);
+        count++;
+        bufLoc[i]++;
       }
-
-      for(int i=0;i<(int)n;i++){
-        a.accel->getRawAccelBufferData(&rawData,1);
-
-        if(!launch){
-          buffer[i].x = rawData.xData;
-          buffer[i].y = rawData.yData;
-          buffer[i].z = rawData.zData;
-          if((buffer[i].x+buffer[i].y+buffer[i].z)*convRange64G > 10){
-            startTime = millis();
-            launch = true;
-            writeTo.write((uint8_t*)&a.num,sizeof(a.num));
-            writeTo.write((uint8_t*)&n,sizeof(n));
-            for(int j=0;j<i;j++){
-              writeTo.write((uint8_t*)&buffer[i].x,sizeof(buffer[i].x)); 
-              writeTo.write((uint8_t*)&buffer[i].y,sizeof(buffer[i].y));
-              writeTo.write((uint8_t*)&buffer[i].z,sizeof(buffer[i].z));
-              count++;
-            }
-          }
-        }
-        else{
-          writeTo.write((uint8_t*)&rawData.xData,sizeof(rawData.xData)); 
-          writeTo.write((uint8_t*)&rawData.yData,sizeof(rawData.yData));
-          writeTo.write((uint8_t*)&rawData.zData,sizeof(rawData.zData));
-          count++;
-        }
+      if(bufLoc[i]>=BUFFER_THRESHOLD){
+        writeTo.write((uint8_t*)&i,sizeof(i));
+        writeTo.write((uint8_t*)&bufLoc[i],sizeof(bufLoc[i]));
+        writeTo.write((uint8_t*)&buf[i],sizeof(buf[i]));
+        writeTo.flush();
+        bufLoc[i] = 0;
       }
-      writeTo.flush();
     }
   }
+}
+
+float magnitude(rawOutputData d){
+  return sqrt(pow(d.xData,2) + pow(d.yData,2) + pow(d.zData,2));
 }
