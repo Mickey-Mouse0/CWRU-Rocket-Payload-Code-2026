@@ -11,12 +11,13 @@ struct dataLoc{
 
 const double convRange64G = .001953;
 std::vector<dataLoc> a1, a2, a3, a4;
-File toRead;
+File toRead, cnt;
 
 
 void setup(){
   Wire.begin();  
   Serial.begin(115200);
+  Wire.setClock(1000000);
   while(!Serial){
     delay(50);
   }
@@ -29,12 +30,19 @@ void setup(){
   }
   Serial.println("connected to SD card!");
 
-  toRead = SD.open("/raw_accel_data.txt");
+
+  int c;
+  cnt = SD.open("/cnt.txt");
+  cnt.read((uint8_t*)&c, sizeof(c));
+  c--;
+  cnt.close();
+
+  toRead = SD.open("/raw_accel_data_" + String(c) + ".txt");
   if(!toRead){
-    Serial.println("Could not open raw_accel_data.txt!");
+    Serial.printf("Could not open %s!\n", ("/raw_accel_data_" + String(c) + ".txt").c_str());
     while(1);
   }
-  Serial.println("Opened raw_accel_data.txt");
+  Serial.printf("Opened %s\n", ("/raw_accel_data_" + String(c) + ".txt").c_str());
 
 
   {
@@ -49,6 +57,8 @@ void setup(){
 
     root.close();
   }
+
+  delay(3000);
 
 
   int8_t accelNum;
